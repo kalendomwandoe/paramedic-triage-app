@@ -1,56 +1,96 @@
-# Welcome to your Expo app 👋
+# Paramedic Triage Intake App
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+A React Native (Expo Router + TypeScript) app for paramedics to log critical
+patient triage data in the field, designed to work reliably with **no or
+unstable network connectivity**.
 
-## Get started
+## Tech stack
 
-1. Install dependencies
+- **React Native + Expo Router (TypeScript)**
+- **Context API + `useReducer`** for state management
+- **`@react-native-async-storage/async-storage`** for local persistence
+- **`@react-native-community/netinfo`** for connectivity monitoring
+- **Jest** for unit tests
 
-   ```bash
-   npm install
-   ```
+## Architecture & separation of concerns
 
-2. Start the app
+src/
+app/
+\_layout.tsx → mounts TriageProvider around the whole app
+index.tsx → the single-screen UI - reads/writes only via useTriage()
+types.ts → shared TriageRecord / Status / Priority types
+storage/storage.ts → local persistence (AsyncStorage) - no UI/network knowledge
+api/mockApi.ts → simulated POST /api/v1/triage (2s delay, 30% random failure)
+context/TriageContext.tsx → state + sync queue engine (the "brain")
+components/PriorityBadge.tsx → hazard-coded priority indicator
+tests/ → reducer + storage unit tests
 
-   ```bash
-   npx expo start
-   ```
+The UI (`index.tsx`) never talks to storage or the network directly — it
+only calls `addTriage(...)` from the `useTriage()` hook. All persistence
+and sync logic lives in `TriageContext.tsx`, so the UI and the data layer
+can be changed independently.
 
-In the output, you'll find options to open the app in a
+## How the offline-first sync queue works
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+1. **Submit is always instant.** When a paramedic taps "Submit", the record
+   is immediately written to in-memory state (and from there, to
+   `AsyncStorage`) and the form clears. This happens regardless of network
+   status — there is no `await` on the network in the submit path, so a dead
+   connection can never block or fail the UI.
+2. **Best-effort immediate sync.** If the device currently appears online,
+   the app fires a background (non-blocking) request to the mock API right
+   away. Success flags the record `synced: true`; failure (or being offline)
+   just leaves it in the queue — no error is shown to the user.
+3. **Reconnection listener.** `NetInfo.addEventListener` watches for
+   connectivity changes. The instant the device comes back online, the app
+   automatically walks every unsynced record and uploads it in sequence.
+4. **App lifecycle handling.** An `AppState` listener re-checks the queue
+   whenever the app returns to the foreground, in case connectivity changed
+   while it was minimized.
+5. **A `syncingRef` guard** prevents two sync passes from ever running
+   concurrently (e.g. a reconnect event firing while a foreground-triggered
+   sync is already in progress).
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+Every record ends in one of two visible states: **Pending** (saved locally,
+waiting for network) or **Synced**. Nothing is ever lost, and nothing ever
+blocks on the network.
 
-## Get a fresh project
-
-When you're ready, run:
+## Setup instructions
 
 ```bash
-npm run reset-project
+npm install
+npm start
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Then scan the QR code with Expo Go, or press `w` for web.
 
-### Other setup steps
+## Running tests
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+```bash
+npm test
+```
 
-## Learn more
+Covers the reducer (add/sync/load/online/syncing transitions) and the
+storage layer (persist/retrieve/overwrite), using a mocked AsyncStorage —
+8 tests, all passing.
 
-To learn more about developing your project with Expo, look at the following resources:
+## Testing the offline scenario
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+1. Submit a record online — it shows "Pending" then flips to "Synced" after
+   ~2 seconds (the mock API's simulated delay).
+2. Enable Airplane Mode (or, on web, DevTools → Network → Offline).
+3. Submit another record — it saves instantly, shows "Pending", no error.
+4. Disable Airplane Mode / re-enable network.
+5. Within a couple seconds the banner returns to "Online" and the pending
+   record automatically flips to "Synced" — no user action required.
 
-## Join the community
+## Notes on simplifications (given assessment time constraints)
 
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- Persistence uses a single JSON array in AsyncStorage rather than
+  SQLite/WatermelonDB. For triage-form-scale data (a handful of records
+  between syncs) this is simpler, has no schema/migrations to maintain, and
+  is fully adequate — `storage.ts` could be swapped for a SQLite-backed
+  implementation without touching the context or UI layers.
+- The mock API simulates `POST /api/v1/triage` with a 2-second delay and a
+  30% random failure rate, per the assessment's suggested mock repository
+  approach.
